@@ -42,17 +42,13 @@
             
             try {
                 // 1. 下载加密文件
-                updateStatus("下载加密文件...");
+                updateStatus("下载文件...");
                 const encryptedData = await downloadEncryptedFile();
                 updateProgress(50);
                 
-                // 2. 解密文件
-                updateStatus("解密文件中...");
                 const decryptedData = decryptFile(encryptedData, input);
                 updateProgress(90);
                 
-                // 3. 触发下载
-                updateStatus("准备下载...");
                 downloadFile(decryptedData, config.finalFileName);
                 
                 updateStatus("下载完成！");
@@ -68,6 +64,7 @@
         async function downloadEncryptedFile() {
             const url = `/enc/${config.encryptedFileName}`;
             const response = await fetch(url);
+            console.log(response)
             if (!response.ok) throw new Error(`下载失败: ${config.encryptedFileName}`);
             
             // 添加下载进度监控
