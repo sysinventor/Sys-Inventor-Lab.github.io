@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Secure iSwap Download</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.0.0/crypto-js.min.js"></script>
+    <style>
+        body { font-family: Arial; text-align: center; padding: 20px; }
+        #progress { 
+            margin: 20px auto; 
+            width: 300px; 
+            height: 20px; 
+        }
+    </style>
+</head>
+<body>
+    <h1>Sys Inventor Lab</h1>
+    <p>iSwap: A New Memory Page Swap Mechanism for Reducing Ineffective I/O Operations in Cloud Environments [<a style="color: blue;" onclick="startDownload()">Download Artifact</a>]</p>
+    
+    <div id="progress" style="display: none;">
+        <progress value="0" max="100"></progress>
+        <p>状态: <span id="status">等待开始...</span></p>
+    </div>
+
+    <script>
+        // 配置项
+        const config = {
+            passwordHash: "03176997887fb6e00da4f97610c023b298c05baf58a934c3ad1f0a496913417a", // 解密密码
+            encryptedFileName: "iSwap.zip.enc", // 加密文件名
+            finalFileName: "iswap.zip" // 最终下载的文件名
+        };
+
+        async function startDownload() {
+            const input = prompt("请输入密码:");
+            const inputHash = CryptoJS.SHA256(input).toString()
+            if (inputHash !== config.passwordHash) {
+                alert("密码错误！");
+                return;
+            }
+
+            document.getElementById("progress").style.display = "block";
+            updateStatus("开始下载加密文件...");
+            
+            try {
+                // 1. 下载加密文件
+                updateStatus("下载加密文件...");
+                const encryptedData = await downloadEncryptedFile();
+                updateProgress(50);
+                
+                // 2. 解密文件
+                updateStatus("解密文件中...");
+                const decryptedData = decryptFile(encryptedData, input);
+                updateProgress(90);
+                
+                // 3. 触发下载
+                updateStatus("准备下载...");
+                downloadFile(decryptedData, config.finalFileName);
+                
+                updateStatus("下载完成！");
+                updateProgress(100);
+            } catch (error) {
+                console.error(error);
+                alert(`出错: ${error.message}`);
+                updateStatus("下载失败");
+            }
+        }
+
+        // 下载加密文件
+        async function downloadEncryptedFile() {
+            const url = `/enc/${config.encryptedFileName}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`下载失败: ${config.encryptedFileName}`);
+            
+            // 添加下载进度监控
+            const contentLength = response.headers.get('Content-Length');
+            const total = contentLength ? parseInt(contentLength, 10) : 0;
+            let loaded = 0;
+            
+            const reader = response.body.getReader();
+            const chunks = [];
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                chunks.push(value);
+                loaded += value.length;
+                
+                if (total) {
+                    updateProgress((loaded / total) * 40); // 下载占总进度的40%
+                }
+            }
+            
+            // 合并所有接收到的数据块
+            let totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            let result = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+            }
+            
+            return result.buffer;
+        }
+
+        // 解密文件
+        function decryptFile(encryptedData, password) {
+            try {
+                // 获取加密数据的字节
+                const data = new Uint8Array(encryptedData);
+                
+                // 检查"Salted__"前缀
+                const prefix = String.fromCharCode.apply(null, data.slice(0, 8));
+                if (prefix !== "Salted__") {
+                    throw new Error("无效的OpenSSL格式(缺少Salted__头)");
+                }
+                
+                // 提取salt (8字节)
+                const salt = data.slice(8, 16);
+                
+                // 提取加密的数据
+                const ciphertext = data.slice(16);
+                
+                // 使用密码和盐派生密钥和IV (OpenSSL EVP_BytesToKey方法)
+                const derivedKeyData = deriveOpenSSLKey(password, salt);
+                
+                // 设置解密参数
+                const encrypted = CryptoJS.lib.CipherParams.create({
+                    ciphertext: CryptoJS.lib.WordArray.create(ciphertext)
+                });
+                
+                // 解密
+                const decrypted = CryptoJS.AES.decrypt(
+                    encrypted,
+                    derivedKeyData.key,
+                    { iv: derivedKeyData.iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
+                );
+                
+                // 正确转换为Uint8Array - 改进方法
+                const words = decrypted.words;
+                const sigBytes = decrypted.sigBytes;
+                const result = new Uint8Array(sigBytes);
+                
+                // 每个word是32位，提取每个字节
+                for (let i = 0; i < sigBytes; i++) {
+                    // 从words数组中提取单个字节
+                    // i >>> 2 得到word索引
+                    // 24 - (i % 4) * 8 计算字节在word中的位置
+                    result[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xFF;
+                }
+                
+                return result;
+            } catch (error) {
+                console.error("解密错误:", error);
+                throw error;
+            }
+        }
+
+        // OpenSSL兼容的密钥派生函数
+        function deriveOpenSSLKey(password, salt) {
+            const passwordWords = CryptoJS.enc.Utf8.parse(password);
+            const saltWords = CryptoJS.lib.WordArray.create(salt);
+            
+            // 生成足够长的密钥材料
+            let keyMaterial = CryptoJS.lib.WordArray.create();
+            let prev = CryptoJS.lib.WordArray.create();
+            
+            // 我们需要48字节 (32用于密钥, 16用于IV)
+            while (keyMaterial.sigBytes < 48) {
+                if (prev.sigBytes > 0) {
+                    prev = CryptoJS.MD5(prev.concat(passwordWords).concat(saltWords));
+                } else {
+                    prev = CryptoJS.MD5(passwordWords.concat(saltWords));
+                }
+                keyMaterial = keyMaterial.concat(prev);
+            }
+            
+            // 分割结果为密钥和IV
+            return {
+                key: CryptoJS.lib.WordArray.create(keyMaterial.words.slice(0, 8)), // 32字节密钥
+                iv: CryptoJS.lib.WordArray.create(keyMaterial.words.slice(8, 12))  // 16字节IV
+            };
+        }
+
+        // 触发浏览器下载
+        function downloadFile(data, fileName) {
+            const blob = new Blob([data], { type: 'application/zip' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 更新进度条
+        function updateProgress(percent) {
+            document.querySelector("progress").value = percent;
+        }
+
+        // 更新状态文本
+        function updateStatus(text) {
+            document.getElementById("status").innerText = text;
+        }
+    </script>
+</body>
+</html>
